@@ -1,0 +1,8 @@
+streamlit
+pandas
+gspread>=6.0.0
+google-auth>=2.30.0
+google-auth-oauthlib>=1.2.0
+google-api-python-client>=2.136.0
+pydrive2>=1.20.0
+pytz
