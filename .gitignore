@@ -5,3 +5,6 @@ __pycache__/
 *.pyd
 .DS_Store
 
+credentials.json
+service_account.json
+token.json
