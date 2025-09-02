@@ -1,24 +1,7 @@
-# OS
-.DS_Store
-
-# Python
+.venv/
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
-*.egg-info/
-.env
-.venv/
-venv/
-ENV/
-env/
-pip-wheel-metadata/
+.DS_Store
 
-# Streamlit & creds
-token.json
-client_secrets.json
-service_account.json
-
-# Misc
-.idea/
-.vscode/
