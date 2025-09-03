@@ -6,20 +6,18 @@ Roommate Rent & Utilities Dashboard (7 roommates)
 - One row per category. No UNPAID marker files.
 - Optional Calendar helper (service account) available.
 
-How to deploy on Streamlit Cloud:
-1) In your app's Settings → Secrets, paste:
-   - SHEET_ID
-   - DRIVE_FOLDER_ID
-   - google_service_account (full JSON object)
-   - gdrive_oauth_client (full JSON object)
-2) Share the Sheet with the service account email (Editor).
-3) The first upload will prompt OAuth (opens a URL in your browser) to create token.json.
+Streamlit Secrets required (Settings → Secrets):
+- SHEET_ID = "<your sheet id or full URL>"
+- DRIVE_FOLDER_ID = "<your drive folder id or full URL>"
+- google_service_account = """{ ...full service account JSON... }"""
+- gdrive_oauth_client  = """{ ...full OAuth client JSON... }"""
 """
 
 import io
 import os
 import re
 import time
+import json
 from datetime import date, datetime, timedelta
 from typing import List, Tuple
 
@@ -27,7 +25,7 @@ import pandas as pd
 import pytz
 import streamlit as st
 
-# ===== Google APIs =====
+# Google APIs
 from google.oauth2.service_account import Credentials as SA
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
@@ -36,40 +34,24 @@ from googleapiclient.errors import HttpError
 from pydrive2.auth import GoogleAuth
 from pydrive2.drive import GoogleDrive
 
-
 # =====================
 # ---- CONFIG ---------
 # =====================
 
-# These can be either raw IDs or full URLs; we normalize below.
-SHEET_ID = st.secrets.get("SHEET_ID",  "")
+SHEET_ID = st.secrets.get("SHEET_ID", "")
 DRIVE_FOLDER_ID = st.secrets.get("DRIVE_FOLDER_ID", "")
 
 WORKSHEET = "Entries"
-HEADER_IMAGE = None  # e.g. "header.png" or a URL (optional)
+HEADER_IMAGE = None
 
-# Optional Calendar (service account). Leave blank to hide the button.
+# Optional Calendar
 CALENDAR_ID = ""   # e.g. "abc123@group.calendar.google.com"
 CALENDAR_TIMEZONE = "America/Los_Angeles"
 CALENDAR_EVENT_HOUR_LOCAL = 9
 
-# Roommates & categories
-ROOMMATES = [
-    "Abhinav",
-    "Harsha",
-    "Gowith",
-    "Gautam",
-    "Dinesh",
-    "Prudhvi",
-    "Shanmukh",
-]
+ROOMMATES = ["Abhinav", "Harsha", "Gowith", "Gautam", "Dinesh", "Prudhvi", "Shanmukh"]
 CATEGORIES = ["Rent", "Utilities", "PG&E"]
-
-HEADERS = [
-    "timestamp", "roommate", "month", "category",
-    "amount", "status", "date", "notes", "file_links"
-]
-
+HEADERS = ["timestamp", "roommate", "month", "category", "amount", "status", "date", "notes", "file_links"]
 
 # ==========================
 # ---- ID NORMALIZERS  -----
@@ -89,52 +71,49 @@ def normalize_drive_folder_id(value: str) -> str:
 SHEET_ID = normalize_sheet_id(SHEET_ID)
 DRIVE_FOLDER_ID = normalize_drive_folder_id(DRIVE_FOLDER_ID)
 
+# ==========================
+# ---- SECRETS HELPERS  ----
+# ==========================
+def _load_service_account_from_secrets() -> dict:
+    """Supports either a TOML table or a triple-quoted JSON string."""
+    raw = st.secrets["google_service_account"]
+    return json.loads(raw) if isinstance(raw, str) else dict(raw)
+
+def _load_drive_oauth_client_from_secrets() -> dict:
+    raw = st.secrets["gdrive_oauth_client"]
+    return json.loads(raw) if isinstance(raw, str) else dict(raw)
 
 # ==========================
 # ---- GOOGLE HELPERS  -----
 # ==========================
-
 @st.cache_resource(show_spinner=False)
 def get_sheets_service():
-    """Sheets service using Service Account from st.secrets."""
     if "google_service_account" not in st.secrets:
         raise RuntimeError("Missing 'google_service_account' in Streamlit secrets.")
     scopes = [
         "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive",
     ]
-    creds = SA.from_service_account_info(
-        dict(st.secrets["google_service_account"]),
-        scopes=scopes
-    )
+    creds = SA.from_service_account_info(_load_service_account_from_secrets(), scopes=scopes)
     return build("sheets", "v4", credentials=creds)
 
 @st.cache_resource(show_spinner=False)
 def get_calendar_service():
-    if not CALENDAR_ID:
-        return None
-    if "google_service_account" not in st.secrets:
+    if not CALENDAR_ID or "google_service_account" not in st.secrets:
         return None
     scopes = ["https://www.googleapis.com/auth/calendar"]
-    creds = SA.from_service_account_info(
-        dict(st.secrets["google_service_account"]),
-        scopes=scopes
-    )
+    creds = SA.from_service_account_info(_load_service_account_from_secrets(), scopes=scopes)
     return build("calendar", "v3", credentials=creds)
 
 @st.cache_resource(show_spinner=False)
 def get_drive_client():
-    """
-    Authenticate to Google Drive via OAuth (as YOU) using client config from st.secrets.
-    On first run it opens a web flow (copy/paste code) and saves token.json to the app dir.
-    """
+    """Authenticate to Google Drive via OAuth (as YOU)."""
     if "gdrive_oauth_client" not in st.secrets:
         raise RuntimeError("Missing 'gdrive_oauth_client' in Streamlit secrets.")
 
-    # Build a settings dict for PyDrive2 that uses in-memory client_config
     settings = {
         "client_config_backend": "settings",
-        "client_config": dict(st.secrets["gdrive_oauth_client"]),
+        "client_config": _load_drive_oauth_client_from_secrets(),
         "save_credentials": True,
         "save_credentials_backend": "file",
         "save_credentials_file": "token.json",
@@ -143,32 +122,25 @@ def get_drive_client():
             "https://www.googleapis.com/auth/drive",
         ],
     }
-
     gauth = GoogleAuth(settings=settings)
-
-    # If there is a saved token.json in the working dir, load it
     try:
         gauth.LoadCredentialsFile("token.json")
     except Exception:
         pass
 
     if getattr(gauth, "credentials", None) is None:
-        # On Streamlit Cloud this shows a URL to copy/paste a code (device/CLI style)
+        # On Streamlit Cloud this shows a URL/code flow in the logs.
         gauth.CommandLineAuth()
     elif gauth.access_token_expired:
         gauth.Refresh()
     else:
         gauth.Authorize()
-
     return GoogleDrive(gauth)
-
 
 # ==========================
 # ---- SHEETS UTILITIES ----
 # ==========================
-
 def _retry_sheets(callable_fn, *args, **kwargs):
-    """Basic exponential backoff for transient 5xx from Google APIs."""
     delay = 1.0
     last_err = None
     for _ in range(5):
@@ -185,7 +157,6 @@ def _retry_sheets(callable_fn, *args, **kwargs):
     raise last_err if last_err else RuntimeError("Unknown Sheets error")
 
 def ensure_worksheet_and_headers(svc):
-    """Create WORKSHEET tab if missing; ensure header row exists."""
     if not SHEET_ID:
         raise RuntimeError("SHEET_ID is blank. Add it to Streamlit secrets.")
     meta = _retry_sheets(svc.spreadsheets().get(spreadsheetId=SHEET_ID).execute)
@@ -250,11 +221,9 @@ def load_entries_df_cached():
         df["amount"] = pd.to_numeric(df["amount"], errors="coerce").fillna(0.0)
     return df
 
-
 # ==========================
 # ---- DRIVE UTILITIES  ----
 # ==========================
-
 def ensure_folder(drive: GoogleDrive, name: str, parent_id: str) -> str:
     q = (
         f"title = '{name}' and "
@@ -280,9 +249,6 @@ def upload_files_to_drive(
     month: str,
     category: str,
 ) -> List[str]:
-    """
-    Uploads into DRIVE_FOLDER_ID/<month>/<roommate>/<category>/ and returns file links.
-    """
     if not DRIVE_FOLDER_ID or not files:
         return []
     month_id = ensure_folder(drive, month, DRIVE_FOLDER_ID)
@@ -294,7 +260,7 @@ def upload_files_to_drive(
         f = drive.CreateFile({"title": filename, "parents": [{"id": cat_id}]})
         f.content = io.BytesIO(data)
         f.Upload()
-        # If you want fully private links, remove the permission below.
+        # If you prefer fully private links, remove the permission below.
         try:
             f.InsertPermission({"type": "anyone", "role": "reader", "value": "anyone"})
         except Exception:
@@ -302,11 +268,9 @@ def upload_files_to_drive(
         links.append(f.get("alternateLink"))
     return links
 
-
 # =====================
 # -------- UI ---------
 # =====================
-
 st.set_page_config(page_title="Roommate Rent & Utilities", page_icon="💸", layout="wide")
 
 if HEADER_IMAGE:
@@ -321,14 +285,12 @@ st.title("💸 Roommate Rent & Utilities Dashboard")
 with st.sidebar:
     st.header("Settings & Filters")
 
-    # Editable roommate names
     st.subheader("Roommates")
     rm_names = []
     for i, name in enumerate(ROOMMATES, start=1):
         rm_names.append(st.text_input(f"Roommate {i}", value=name, key=f"rm_{i}"))
     ROOMMATES[:] = rm_names
 
-    # Optional calendar
     cal = get_calendar_service()
     if CALENDAR_ID and cal:
         if st.button("Create/Update monthly calendar reminders (1st, 9am)"):
@@ -342,7 +304,6 @@ with st.sidebar:
                 )
             )
             end_dt = start_dt + timedelta(hours=1)
-
             created = 0
             for rm in ROOMMATES:
                 summary = f"Rent & Utilities — {rm}"
@@ -364,7 +325,6 @@ with st.sidebar:
     else:
         st.info("Optional: set CALENDAR_ID to enable 1st-of-month reminders.")
 
-    # Filters
     st.subheader("Filters")
     try:
         df_now = load_entries_df_cached()
@@ -380,7 +340,6 @@ with st.sidebar:
 # Add Entries
 st.subheader("Add entries — one column per roommate")
 columns = st.columns(len(ROOMMATES))
-
 sheets = None
 drive = None
 
@@ -433,7 +392,6 @@ for col, rm in zip(columns, ROOMMATES):
                 drive_error = None
                 for item in pending:
                     links = []
-                    # Upload (if any)
                     try:
                         if DRIVE_FOLDER_ID and item.get("uploads"):
                             if drive is None:
@@ -446,7 +404,7 @@ for col, rm in zip(columns, ROOMMATES):
                                 category=item["category"],
                             )
                     except Exception as e:
-                        drive_error = e  # continue; we still write to sheet
+                        drive_error = e  # keep writing to sheet
 
                     row = [
                         time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -500,4 +458,3 @@ else:
     st.divider()
     st.caption("Click column headers to sort. File links open the uploaded receipts in Drive.")
     st.dataframe(filtered, use_container_width=True)
-
