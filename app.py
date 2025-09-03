@@ -42,8 +42,8 @@ from pydrive2.drive import GoogleDrive
 # =====================
 
 # These can be either raw IDs or full URLs; we normalize below.
-SHEET_ID = st.secrets.get("SHEET_ID",  "1OFZmNjhm6zsziqmMSdMNFlDHOD3pv4Pi5RYjyDYUl0Q")
-DRIVE_FOLDER_ID = st.secrets.get("DRIVE_FOLDER_ID", "1O_F015x9HNszZDQNYn4e73cgJzC7XNXe")
+SHEET_ID = st.secrets.get("SHEET_ID",  "")
+DRIVE_FOLDER_ID = st.secrets.get("DRIVE_FOLDER_ID", "")
 
 WORKSHEET = "Entries"
 HEADER_IMAGE = None  # e.g. "header.png" or a URL (optional)
