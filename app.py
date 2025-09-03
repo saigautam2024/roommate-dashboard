@@ -1,17 +1,4 @@
-"""
-Roommate Rent & Utilities Dashboard (7 roommates)
--------------------------------------------------
-- Google Sheets: official Sheets API (Service Account via st.secrets) ✅
-- Google Drive: PyDrive2 OAuth (as YOU, client in st.secrets)        ✅
-- One row per category. No UNPAID marker files.
-- Optional Calendar helper (service account) available.
 
-Streamlit Secrets required (Settings → Secrets):
-- SHEET_ID = "<your sheet id or full URL>"
-- DRIVE_FOLDER_ID = "<your drive folder id or full URL>"
-- google_service_account = """{ ...full service account JSON... }"""
-- gdrive_oauth_client  = """{ ...full OAuth client JSON... }"""
-"""
 
 import io
 import os
