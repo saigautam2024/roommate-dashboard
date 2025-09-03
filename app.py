@@ -1,51 +1,52 @@
 """
 Roommate Rent & Utilities Dashboard (7 roommates)
 -------------------------------------------------
-- Google Sheets: official Sheets API (service account)   ✅ (no gspread)
-- Google Drive: PyDrive2 OAuth (as YOU)                  ✅
+- Google Sheets: official Sheets API (Service Account via st.secrets) ✅
+- Google Drive: PyDrive2 OAuth (as YOU, client in st.secrets)        ✅
 - One row per category. No UNPAID marker files.
 - Optional Calendar helper (service account) available.
 
-Setup
-1) Create/choose a Google Sheet and share it with your service account email (Editor).
-2) Copy the Sheet URL or ID into SHEET_ID below.
-3) Create a "Roommate Receipts" folder in *My Drive* and copy its URL or ID into DRIVE_FOLDER_ID.
-4) Put `service_account.json` (for Sheets) and `credentials.json` (for Drive OAuth) next to this file.
-5) First run will open a browser for Drive OAuth → saves token.json next to this file.
+How to deploy on Streamlit Cloud:
+1) In your app's Settings → Secrets, paste:
+   - SHEET_ID
+   - DRIVE_FOLDER_ID
+   - google_service_account (full JSON object)
+   - gdrive_oauth_client (full JSON object)
+2) Share the Sheet with the service account email (Editor).
+3) The first upload will prompt OAuth (opens a URL in your browser) to create token.json.
 """
 
-import os
 import io
+import os
 import re
 import time
 from datetime import date, datetime, timedelta
 from typing import List, Tuple
 
 import pandas as pd
-import streamlit as st
 import pytz
+import streamlit as st
 
-# ===== Sheets API (service account) =====
+# ===== Google APIs =====
 from google.oauth2.service_account import Credentials as SA
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
-# ===== Google Drive (OAuth as YOU) =====
+# Drive as YOU (OAuth)
 from pydrive2.auth import GoogleAuth
 from pydrive2.drive import GoogleDrive
+
 
 # =====================
 # ---- CONFIG ---------
 # =====================
 
-# You can paste either the raw ID or the full URL; we normalize it below.
-SHEET_ID = "1OFZmNjhm6zsziqmMSdMNFlDHOD3pv4Pi5RYjyDYUl0Q"
-WORKSHEET = "Entries"  # tab name (will be created if missing)
+# These can be either raw IDs or full URLs; we normalize below.
+SHEET_ID = st.secrets.get("SHEET_ID", "")
+DRIVE_FOLDER_ID = st.secrets.get("DRIVE_FOLDER_ID", "")
 
-DRIVE_FOLDER_ID = "1O_F015x9HNszZDQNYn4e73cgJzC7XNXe"  # parent folder (My Drive)
-
-SERVICE_ACCOUNT_JSON = os.environ.get("SERVICE_ACCOUNT_JSON", "service_account.json")
-HEADER_IMAGE = "header.png"  # optional
+WORKSHEET = "Entries"
+HEADER_IMAGE = None  # e.g. "header.png" or a URL (optional)
 
 # Optional Calendar (service account). Leave blank to hide the button.
 CALENDAR_ID = ""   # e.g. "abc123@group.calendar.google.com"
@@ -64,19 +65,22 @@ ROOMMATES = [
 ]
 CATEGORIES = ["Rent", "Utilities", "PG&E"]
 
+HEADERS = [
+    "timestamp", "roommate", "month", "category",
+    "amount", "status", "date", "notes", "file_links"
+]
+
+
 # ==========================
 # ---- ID NORMALIZERS  -----
 # ==========================
-
 def normalize_sheet_id(value: str) -> str:
-    """Accept a raw ID or a full Google Sheets URL and return the ID."""
     if not value:
         return value
     m = re.search(r"/spreadsheets/d/([a-zA-Z0-9-_]+)", value)
     return m.group(1) if m else value
 
 def normalize_drive_folder_id(value: str) -> str:
-    """Accept a raw ID or a full Drive folder URL and return the ID."""
     if not value:
         return value
     m = re.search(r"/folders/([a-zA-Z0-9-_]+)", value)
@@ -85,32 +89,52 @@ def normalize_drive_folder_id(value: str) -> str:
 SHEET_ID = normalize_sheet_id(SHEET_ID)
 DRIVE_FOLDER_ID = normalize_drive_folder_id(DRIVE_FOLDER_ID)
 
+
 # ==========================
 # ---- GOOGLE HELPERS  -----
 # ==========================
 
 @st.cache_resource(show_spinner=False)
 def get_sheets_service():
+    """Sheets service using Service Account from st.secrets."""
+    if "google_service_account" not in st.secrets:
+        raise RuntimeError("Missing 'google_service_account' in Streamlit secrets.")
     scopes = [
         "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive",
     ]
-    creds = SA.from_service_account_file(SERVICE_ACCOUNT_JSON, scopes=scopes)
+    creds = SA.from_service_account_info(
+        dict(st.secrets["google_service_account"]),
+        scopes=scopes
+    )
     return build("sheets", "v4", credentials=creds)
 
 @st.cache_resource(show_spinner=False)
 def get_calendar_service():
     if not CALENDAR_ID:
         return None
+    if "google_service_account" not in st.secrets:
+        return None
     scopes = ["https://www.googleapis.com/auth/calendar"]
-    creds = SA.from_service_account_file(SERVICE_ACCOUNT_JSON, scopes=scopes)
+    creds = SA.from_service_account_info(
+        dict(st.secrets["google_service_account"]),
+        scopes=scopes
+    )
     return build("calendar", "v3", credentials=creds)
 
 @st.cache_resource(show_spinner=False)
 def get_drive_client():
-    """Authenticate to Google Drive via OAuth (as YOU) so uploads go to your My Drive."""
-    gauth = GoogleAuth(settings={
-        "client_config_file": "credentials.json",
+    """
+    Authenticate to Google Drive via OAuth (as YOU) using client config from st.secrets.
+    On first run it opens a web flow (copy/paste code) and saves token.json to the app dir.
+    """
+    if "gdrive_oauth_client" not in st.secrets:
+        raise RuntimeError("Missing 'gdrive_oauth_client' in Streamlit secrets.")
+
+    # Build a settings dict for PyDrive2 that uses in-memory client_config
+    settings = {
+        "client_config_backend": "settings",
+        "client_config": dict(st.secrets["gdrive_oauth_client"]),
         "save_credentials": True,
         "save_credentials_backend": "file",
         "save_credentials_file": "token.json",
@@ -118,25 +142,30 @@ def get_drive_client():
             "https://www.googleapis.com/auth/drive.file",
             "https://www.googleapis.com/auth/drive",
         ],
-    })
+    }
+
+    gauth = GoogleAuth(settings=settings)
+
+    # If there is a saved token.json in the working dir, load it
     try:
         gauth.LoadCredentialsFile("token.json")
     except Exception:
         pass
 
     if getattr(gauth, "credentials", None) is None:
-        gauth.LocalWebserverAuth()   # opens browser on first run
+        # On Streamlit Cloud this shows a URL to copy/paste a code (device/CLI style)
+        gauth.CommandLineAuth()
     elif gauth.access_token_expired:
         gauth.Refresh()
     else:
         gauth.Authorize()
+
     return GoogleDrive(gauth)
+
 
 # ==========================
 # ---- SHEETS UTILITIES ----
 # ==========================
-
-HEADERS = ["timestamp", "roommate", "month", "category", "amount", "status", "date", "notes", "file_links"]
 
 def _retry_sheets(callable_fn, *args, **kwargs):
     """Basic exponential backoff for transient 5xx from Google APIs."""
@@ -157,13 +186,16 @@ def _retry_sheets(callable_fn, *args, **kwargs):
 
 def ensure_worksheet_and_headers(svc):
     """Create WORKSHEET tab if missing; ensure header row exists."""
+    if not SHEET_ID:
+        raise RuntimeError("SHEET_ID is blank. Add it to Streamlit secrets.")
     meta = _retry_sheets(svc.spreadsheets().get(spreadsheetId=SHEET_ID).execute)
     sheets = {s["properties"]["title"]: s for s in meta.get("sheets", [])}
     if WORKSHEET not in sheets:
         _retry_sheets(
-            svc.spreadsheets().batchUpdate(spreadsheetId=SHEET_ID, body={
-                "requests": [{"addSheet": {"properties": {"title": WORKSHEET}}}]
-            }).execute
+            svc.spreadsheets().batchUpdate(
+                spreadsheetId=SHEET_ID,
+                body={"requests": [{"addSheet": {"properties": {"title": WORKSHEET}}}]}
+            ).execute
         )
         _retry_sheets(
             svc.spreadsheets().values().update(
@@ -218,6 +250,7 @@ def load_entries_df_cached():
         df["amount"] = pd.to_numeric(df["amount"], errors="coerce").fillna(0.0)
     return df
 
+
 # ==========================
 # ---- DRIVE UTILITIES  ----
 # ==========================
@@ -249,7 +282,6 @@ def upload_files_to_drive(
 ) -> List[str]:
     """
     Uploads into DRIVE_FOLDER_ID/<month>/<roommate>/<category>/ and returns file links.
-    (No unpaid marker files.)
     """
     if not DRIVE_FOLDER_ID or not files:
         return []
@@ -262,12 +294,14 @@ def upload_files_to_drive(
         f = drive.CreateFile({"title": filename, "parents": [{"id": cat_id}]})
         f.content = io.BytesIO(data)
         f.Upload()
+        # If you want fully private links, remove the permission below.
         try:
             f.InsertPermission({"type": "anyone", "role": "reader", "value": "anyone"})
         except Exception:
             pass
         links.append(f.get("alternateLink"))
     return links
+
 
 # =====================
 # -------- UI ---------
@@ -277,7 +311,7 @@ st.set_page_config(page_title="Roommate Rent & Utilities", page_icon="💸", lay
 
 if HEADER_IMAGE:
     try:
-        st.image(HEADER_IMAGE, use_column_width=True)
+        st.image(HEADER_IMAGE, use_container_width=True)
     except Exception:
         pass
 
@@ -335,7 +369,7 @@ with st.sidebar:
     try:
         df_now = load_entries_df_cached()
     except Exception as e:
-        st.error(f"Could not load data from Sheets. Check SHEET_ID and sharing. Error: {e}")
+        st.error(f"Could not load data from Sheets. Check SHEET_ID + sharing. Error: {e}")
         df_now = pd.DataFrame(columns=HEADERS)
 
     roommates_in_sheet = sorted([r for r in (df_now["roommate"].unique().tolist() if not df_now.empty else []) if r])
@@ -388,7 +422,7 @@ for col, rm in zip(columns, ROOMMATES):
 
         if submitted:
             if not SHEET_ID:
-                st.error("Please set SHEET_ID (ID or full URL) in the code.")
+                st.error("Please set SHEET_ID in Streamlit secrets.")
             elif not pending:
                 st.warning("Nothing to save — enter Month and at least one category.")
             else:
@@ -467,13 +501,3 @@ else:
     st.caption("Click column headers to sort. File links open the uploaded receipts in Drive.")
     st.dataframe(filtered, use_container_width=True)
 
-# Footer / Admin
-st.divider()
-st.subheader("Admin / Setup")
-sheet_url = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/edit"
-st.markdown(
-    f"- **Sheet URL**: {sheet_url}\n"
-    "- **WORKSHEET**: created if missing with headers.\n"
-    "- **DRIVE_FOLDER_ID**: uploads go under /<month>/<roommate>/<category>/ (only when files are attached).\n"
-    "- **OAuth files**: keep `credentials.json` + generated `token.json` next to this file.\n"
-)
